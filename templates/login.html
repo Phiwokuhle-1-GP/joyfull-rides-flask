@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block title %}Owner Sign In | Joyful Rides{% endblock %}
+
+{% block content %}
+<style>
+  .owner-login {
+    --green: #166534;
+    --green-dark: #14532d;
+    min-height: 72vh;
+    display: grid;
+    place-items: center;
+    padding: 48px 20px;
+    background: linear-gradient(145deg, #f0fdf4, #f8fafc 65%);
+  }
+
+  .owner-login__card {
+    width: 100%;
+    max-width: 440px;
+    padding: 40px;
+    background: #fff;
+    border: 1px solid #dce9e0;
+    border-top: 5px solid var(--green);
+    border-radius: 20px;
+    box-shadow: 0 16px 48px rgba(20, 83, 45, 0.08);
+  }
+
+  .owner-login__mark {
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    margin-bottom: 24px;
+    border-radius: 16px;
+    color: var(--green);
+    background: #eaf7ee;
+  }
+
+  .owner-login__eyebrow {
+    margin-bottom: 8px;
+    color: var(--green);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .owner-login h1 {
+    margin: 0 0 10px;
+    color: #173327;
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.7px;
+  }
+
+  .owner-login__intro {
+    margin-bottom: 28px;
+    color: #5c6d64;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .owner-login label {
+    display: block;
+    margin-bottom: 8px;
+    color: #273e31;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .owner-login__field {
+    margin-bottom: 20px;
+  }
+
+  .owner-login input {
+    width: 100%;
+    min-height: 50px;
+    padding: 12px 14px;
+    border: 1px solid #cbd8cf;
+    border-radius: 10px;
+    background: #fff;
+    color: #173327;
+    font-size: 16px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+
+  .owner-login input:focus {
+    outline: none;
+    border-color: var(--green);
+    box-shadow: 0 0 0 4px rgba(22, 101, 52, 0.12);
+  }
+
+  .owner-login__submit {
+    width: 100%;
+    min-height: 50px;
+    margin-top: 4px;
+    border: none;
+    border-radius: 10px;
+    background: var(--green);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+  }
+
+  .owner-login__submit:hover {
+    background: var(--green-dark);
+  }
+
+  .owner-login__submit:focus-visible,
+  .owner-login__back:focus-visible {
+    outline: 3px solid #166534;
+    outline-offset: 4px;
+  }
+
+  .owner-login__error {
+    margin-bottom: 20px;
+    padding: 12px 14px;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+    background: #fff1f2;
+    color: #991b1b;
+    font-size: 14px;
+  }
+
+  .owner-login__footer {
+    margin-top: 26px;
+    padding-top: 20px;
+    border-top: 1px solid #edf1ee;
+    text-align: center;
+  }
+
+  .owner-login__back {
+    color: var(--green);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .owner-login__back:hover {
+    text-decoration: underline;
+  }
+
+  @media (max-width: 480px) {
+    .owner-login__card {
+      padding: 28px 24px;
+    }
+  }
+</style>
+
+<section class="owner-login" aria-labelledby="owner-login-title">
+  <div class="owner-login__card">
+    <div class="owner-login__mark" aria-hidden="true">
+      <svg width="28" height="28" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="10" width="14" height="11" rx="2"></rect>
+        <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+        <path d="M12 14v3"></path>
+      </svg>
+    </div>
+
+    <p class="owner-login__eyebrow">Joyful Rides · Owner portal</p>
+    <h1 id="owner-login-title">Welcome back</h1>
+    <p class="owner-login__intro">
+      Sign in to manage enquiries and review your website’s performance.
+    </p>
+
+    {% if error %}
+      <div class="owner-login__error" role="alert">
+        {{ error }}
+      </div>
+    {% endif %}
+
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="owner-login__field">
+        <label for="owner-username">Username</label>
+        <input
+          id="owner-username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          autocapitalize="none"
+          spellcheck="false"
+          placeholder="Enter your username"
+          required
+        >
+      </div>
+
+      <div class="owner-login__field">
+        <label for="owner-password">Password</label>
+        <input
+          id="owner-password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Enter your password"
+          required
+        >
+      </div>
+
+      <button class="owner-login__submit" type="submit">
+        Sign in to dashboard
+      </button>
+    </form>
+
+    <div class="owner-login__footer">
+      <a class="owner-login__back" href="{{ url_for('home') }}">
+        ← Back to website
+      </a>
+    </div>
+  </div>
+</section>
+{% endblock %}

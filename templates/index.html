@@ -20,12 +20,12 @@
         </p>
 
         <div class="d-flex flex-wrap gap-2">
-          <button class="btn btn-accent btn-lg" type="button" data-bs-toggle="modal" data-bs-target="#quoteModal">
+          <a class="btn btn-accent" href="{{ url_for('enquiry',kind='quote') }}">
             Request Quote
-          </button>
+          </a>
 
           <a class="btn btn-outline-secondary btn-lg" href="#routes">View Routes</a>
-          <a class="btn btn-outline-dark btn-lg" href="tel:+27XXXXXXXXX">Call Now</a>
+          {% if config.CONTACT_PHONE %}<a class="btn btn-outline-dark btn-lg" href="tel:{{ config.CONTACT_PHONE }}">Call Now</a>{% endif %}
         </div>
 
         <div class="hero-trust mt-4">
@@ -136,9 +136,9 @@
         <p class="text-muted mb-0">Example packages — final pricing depends on distance & schedule.</p>
       </div>
 
-      <button class="btn btn-accent" type="button" data-bs-toggle="modal" data-bs-target="#quoteModal">
+      <a class="btn btn-accent" href="{{ url_for('enquiry',kind='quote') }}">
         Get my quote
-      </button>
+      </a>
     </div>
 
     <div class="row g-3">
@@ -146,16 +146,16 @@
         <div class="card card-elevate h-100 p-4">
           <h5 class="fw-bold">Morning Only</h5>
           <p class="text-muted small">Home → School</p>
-          <div class="price">From R___ / month</div>
+          <div class="price">Request a monthly quote</div>
           <ul class="mt-3 small text-muted">
             <li>Fixed pickup window</li>
             <li>WhatsApp updates</li>
             <li>Monthly billing</li>
           </ul>
 
-          <button class="btn btn-outline-accent mt-2" type="button" data-bs-toggle="modal" data-bs-target="#quoteModal">
+          <a class="btn btn-accent" href="{{ url_for('enquiry',kind='quote') }}">
             Request
-          </button>
+          </a>
         </div>
       </div>
 
@@ -164,16 +164,16 @@
           <span class="badge badge-accent mb-2">Most popular</span>
           <h5 class="fw-bold">Morning + Afternoon</h5>
           <p class="text-muted small">Home ↔ School</p>
-          <div class="price">From R___ / month</div>
+          <div class="price">Request a monthly quote</div>
           <ul class="mt-3 small text-muted">
             <li>Drop-off + pickup</li>
             <li>Aftercare support (optional)</li>
             <li>Priority on existing routes</li>
           </ul>
 
-          <button class="btn btn-accent mt-2" type="button" data-bs-toggle="modal" data-bs-target="#quoteModal">
+          <a class="btn btn-accent" href="{{ url_for('enquiry',kind='quote') }}">
             Request
-          </button>
+          </a>
         </div>
       </div>
 
@@ -188,9 +188,9 @@
             <li>School partnership options</li>
           </ul>
 
-          <button class="btn btn-outline-accent mt-2" type="button" data-bs-toggle="modal" data-bs-target="#quoteModal">
+          <a class="btn btn-accent" href="{{ url_for('enquiry',kind='quote') }}">
             Request
-          </button>
+          </a>
         </div>
       </div>
     </div>
@@ -348,24 +348,16 @@
         </div>
 
         <div class="d-flex gap-2 mt-3 flex-wrap">
-          <a class="btn btn-accent" href="https://wa.me/27XXXXXXXXX" target="_blank" rel="noopener">WhatsApp</a>
-          <a class="btn btn-outline-secondary" href="tel:+27XXXXXXXXX">Call</a>
-          <a class="btn btn-outline-secondary" href="mailto:info@joyfulridesshuttle.co.za">Email</a>
+          {% if config.WHATSAPP_NUMBER %}<a class="btn btn-accent" href="https://wa.me/{{ config.WHATSAPP_NUMBER }}" target="_blank" rel="noopener">WhatsApp</a>{% endif %}
+          {% if config.CONTACT_PHONE %}<a class="btn btn-outline-secondary" href="tel:{{ config.CONTACT_PHONE }}">Call</a>{% endif %}
+          <a class="btn btn-outline-secondary" href="mailto:{{ config.CONTACT_EMAIL }}">Email</a>
         </div>
       </div>
 
       <div class="col-lg-6">
         <div class="card card-elevate p-4">
           <h5 class="fw-bold mb-3">Send a message</h5>
-          <form>
-            <div class="row g-2">
-              <div class="col-md-6"><input class="form-control" placeholder="Name" required></div>
-              <div class="col-md-6"><input class="form-control" placeholder="Email" type="email"></div>
-              <div class="col-12"><input class="form-control" placeholder="Subject"></div>
-              <div class="col-12"><textarea class="form-control" rows="5" placeholder="Message"></textarea></div>
-              <div class="col-12"><button class="btn btn-accent w-100" type="button">Send</button></div>
-            </div>
-          </form>
+          <a class="btn btn-accent" href="{{ url_for('enquiry',kind='contact') }}">Send an enquiry</a>
         </div>
       </div>
     </div>

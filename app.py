@@ -1,281 +1,226 @@
-import os
-import sqlite3
-import hashlib
-from datetime import datetime, timedelta
+import os, re, sqlite3, secrets, hashlib, hmac, logging
+from pathlib import Path
+from datetime import timedelta, datetime, timezone
 from functools import wraps
-
-from flask import Flask, render_template, abort, g, request, Response
-
-
-app = Flask(__name__)
-
-# --- Simple in-memory posts (your existing posts) ---
-POSTS = [
-    {
-        "slug": "safe-school-transport-checklist",
-        "title": "Safe School Transport Checklist for Parents",
-        "date": "2026-02-02",
-        "read_time": "3 min read",
-        "category": "Safety",
-        "excerpt": "A quick checklist parents can use when choosing a school shuttle service.",
-        "cover": "/static/blog/blog-1.jpg",
-        "content_html": """
-            <p>Choosing a shuttle isn’t just about price — it’s about consistency, communication, and safety habits.</p>
-            <h3>1) Confirm safety basics</h3>
-            <ul>
-              <li>Seatbelts for every child</li>
-              <li>Clear rules: seated, no moving, no loud distractions</li>
-              <li>Age-appropriate supervision and behavior expectations</li>
-            </ul>
-            <h3>2) Ask about driver standards</h3>
-            <ul>
-              <li>Professional conduct</li>
-              <li>Route familiarity and punctuality</li>
-              <li>Emergency contact process</li>
-            </ul>
-            <h3>3) Communication matters</h3>
-            <p>WhatsApp updates for delays and confirmations build trust and reduce stress for parents.</p>
-        """,
-    },
-    {
-        "slug": "how-monthly-packages-save-time",
-        "title": "How Monthly Packages Save Parents Time (and Stress)",
-        "date": "2026-02-02",
-        "read_time": "4 min read",
-        "category": "Parents",
-        "excerpt": "Monthly school transport packages simplify routines and reduce daily planning.",
-        "cover": "/static/blog/blog-2.jpg",
-        "content_html": """
-            <p>When your schedule is packed, consistency becomes your biggest advantage.</p>
-            <h3>Benefits of monthly packages</h3>
-            <ul>
-              <li>Stable pickup times and routes</li>
-              <li>Less daily coordination</li>
-              <li>Clear billing and predictable costs</li>
-            </ul>
-            <p>It also makes it easier for your child to build a calm routine.</p>
-        """,
-    },
-    {
-        "slug": "why-on-time-is-a-system",
-        "title": "On-Time Isn’t Luck — It’s a System",
-        "date": "2026-02-02",
-        "read_time": "3 min read",
-        "category": "Operations",
-        "excerpt": "A simple breakdown of what makes school transport consistently punctual.",
-        "cover": "/static/blog/blog-3.jpg",
-        "content_html": """
-            <p>On-time performance comes from repeatable processes, not guesswork.</p>
-            <h3>What helps punctuality?</h3>
-            <ul>
-              <li>Route planning + realistic pickup windows</li>
-              <li>Good communication when conditions change</li>
-              <li>Consistent, disciplined routines</li>
-            </ul>
-            <p>When parents and drivers share the same routine, everything runs smoother.</p>
-        """,
-    },
-]
+from urllib.parse import urlsplit
+import click
+from flask import Flask, render_template, request, session, redirect, url_for, flash, abort, g
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+from posts import POSTS
 
 
-# =========================
-# Analytics (local, SQLite)
-# =========================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
-os.makedirs(INSTANCE_DIR, exist_ok=True)
+def create_app(test_config=None):
+    app = Flask(__name__)
+    production = os.getenv("APP_ENV") == "production"
+    data_dir = Path(os.getenv("DATA_DIR", str(Path(__file__).parent / "instance")))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    secret = os.getenv("SECRET_KEY")
+    if not secret:
+        if production:
+            raise RuntimeError("Set a random SECRET_KEY before starting production")
+        secret_path = data_dir / "session.key"
+        if not secret_path.exists():
+            secret_path.write_text(secrets.token_hex(32)); secret_path.chmod(0o600)
+        secret = secret_path.read_text().strip()
+    if len(secret) < 32:
+        raise RuntimeError("SECRET_KEY must be at least 32 characters")
+    app.config.update(SECRET_KEY=secret, DATABASE=str(data_dir / "analytics.db"),
+        SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=production, PERMANENT_SESSION_LIFETIME=timedelta(minutes=30),
+        SESSION_REFRESH_EACH_REQUEST=False, MAX_CONTENT_LENGTH=32*1024,
+        CONTACT_PHONE=os.getenv("CONTACT_PHONE", ""), CONTACT_EMAIL=os.getenv("CONTACT_EMAIL", "info@joyfulridesshuttle.co.za"),
+        WHATSAPP_NUMBER=re.sub(r"\D", "", os.getenv("WHATSAPP_NUMBER", "")))
+    if test_config: app.config.update(test_config)
+    # Enable only for the exact number of trusted reverse proxies in your deployment.
+    hops = int(os.getenv("TRUSTED_PROXY_HOPS", "0"))
+    if hops: app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops, x_proto=hops)
 
-DB_PATH = os.path.join(INSTANCE_DIR, "analytics.db")
+    def db():
+        if "db" not in g:
+            g.db = sqlite3.connect(app.config["DATABASE"], timeout=10)
+            g.db.row_factory = sqlite3.Row
+            g.db.execute("PRAGMA journal_mode=WAL")
+        return g.db
 
+    @app.teardown_appcontext
+    def close_db(error):
+        conn = g.pop("db", None)
+        if conn is not None: conn.close()
 
-def get_db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA journal_mode=WAL;")
-    return g.db
+    with app.app_context():
+        db().executescript("""
+        CREATE TABLE IF NOT EXISTS owners(id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS enquiries(id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL,
+          name TEXT NOT NULL, email TEXT, phone TEXT, school TEXT, pickup TEXT, dropoff TEXT, message TEXT,
+          status TEXT NOT NULL DEFAULT 'new', source TEXT, medium TEXT, campaign TEXT, visitor TEXT, submission_id TEXT UNIQUE);
+        CREATE TABLE IF NOT EXISTS page_views(id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, path TEXT,
+          visitor TEXT, source TEXT, medium TEXT, campaign TEXT);
+        CREATE INDEX IF NOT EXISTS pv_date ON page_views(created_at);
+        CREATE TABLE IF NOT EXISTS request_errors(id INTEGER PRIMARY KEY, created_at TEXT, path TEXT, status INTEGER);
+        CREATE TABLE IF NOT EXISTS rate_events(id INTEGER PRIMARY KEY, created_at INTEGER, bucket TEXT, identity TEXT);
+        CREATE INDEX IF NOT EXISTS rate_lookup ON rate_events(bucket,identity,created_at);
+        """); db().commit()
 
+    def now(): return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    def csrf():
+        if "csrf" not in session: session["csrf"] = secrets.token_hex(32)
+        return session["csrf"]
+    app.jinja_env.globals["csrf_token"] = csrf
 
-@app.teardown_appcontext
-def close_db(_exc):
-    db = g.pop("db", None)
-    if db:
-        db.close()
+    def limited(bucket, maximum, seconds):
+        conn=db(); stamp=int(datetime.now(timezone.utc).timestamp())
+        identity=hmac.new(app.secret_key.encode(), (request.remote_addr or "unknown").encode(), hashlib.sha256).hexdigest()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM rate_events WHERE created_at < ?", (stamp-86400,))
+            count=conn.execute("SELECT COUNT(*) FROM rate_events WHERE bucket=? AND identity=? AND created_at>?",(bucket,identity,stamp-seconds)).fetchone()[0]
+            if count >= maximum:
+                conn.commit(); return True
+            conn.execute("INSERT INTO rate_events(created_at,bucket,identity) VALUES(?,?,?)",(stamp,bucket,identity)); conn.commit()
+            return False
+        except Exception:
+            conn.rollback(); raise
 
+    @app.before_request
+    def prepare():
+        if request.method == "POST":
+            expected=session.get("csrf", ""); provided=request.form.get("csrf_token", "")
+            if not expected or not hmac.compare_digest(expected,provided): abort(400, "Form expired. Reload the page and try again.")
+        if request.endpoint in {"home","blog","blog_post","soe_blog_alias"}:
+            if "visitor" not in session: session["visitor"]=secrets.token_hex(16)
+            if request.args.get("utm_source") or request.args.get("utm_campaign"):
+                session["attribution"]={k:request.args.get("utm_"+k, "")[:100] for k in ("source","medium","campaign")}
+            elif "attribution" not in session:
+                ref=urlsplit(request.referrer or "").hostname
+                session["attribution"]={"source":ref if ref and ref!=request.host.split(":")[0] else "direct", "medium":"", "campaign":""}
 
-def init_analytics_db():
-    db = get_db()
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS visits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            path TEXT NOT NULL,
-            method TEXT NOT NULL,
-            status INTEGER NOT NULL,
-            referrer TEXT,
-            ua TEXT,
-            ip_hash TEXT
-        )
-        """
-    )
-    db.execute("CREATE INDEX IF NOT EXISTS idx_visits_ts ON visits(ts)")
-    db.execute("CREATE INDEX IF NOT EXISTS idx_visits_path ON visits(path)")
-    db.commit()
+    @app.after_request
+    def track(response):
+        response.headers["X-Content-Type-Options"]="nosniff"
+        response.headers["X-Frame-Options"]="SAMEORIGIN"
+        response.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
+        response.headers["Cache-Control"]="no-store" if not request.path.startswith("/static/") else "public, max-age=3600"
+        if request.path.startswith(("/admin", "/login")): response.headers["X-Robots-Tag"]="noindex, nofollow"
+        try:
+            if request.method == "GET" and response.status_code >= 400 and not request.path.startswith(("/static/","/admin","/login")):
+                db().execute("INSERT INTO request_errors(created_at,path,status) VALUES(?,?,?)",(now(),request.path[:300],response.status_code)); db().commit()
+            ua=request.user_agent.string.lower()
+            bot=not ua or any(x in ua for x in ("bot","spider","crawler","headless","curl","wget","python-requests"))
+            if request.method=="GET" and response.status_code==200 and request.endpoint in {"home","blog","blog_post","soe_blog_alias"} and not bot:
+                a=session.get("attribution",{})
+                db().execute("INSERT INTO page_views(created_at,path,visitor,source,medium,campaign) VALUES(?,?,?,?,?,?)",
+                    (now(),request.path,session.get("visitor"),a.get("source","direct"),a.get("medium",""),a.get("campaign",""))); db().commit()
+        except sqlite3.Error:
+            app.logger.exception("Analytics write failed")
+        return response
 
+    def owner_required(fn):
+        @wraps(fn)
+        def wrapped(*args,**kwargs):
+            if not session.get("owner") or not db().execute("SELECT id FROM owners WHERE id=?",(session["owner"],)).fetchone():
+                return redirect(url_for("login"))
+            return fn(*args,**kwargs)
+        return wrapped
 
-def _is_trackable(path: str) -> bool:
-    if not path:
-        return False
-    if path.startswith("/static"):
-        return False
-    if path.startswith("/admin"):
-        return False
-    return True
+    @app.get("/")
+    def home(): return render_template("index.html")
+    @app.get("/blog")
+    def blog(): return render_template("blog.html",posts=sorted(POSTS,key=lambda x:x["date"],reverse=True))
+    @app.get("/soe")
+    def soe_blog_alias(): return redirect(url_for("blog"),301)
+    @app.get("/blog/<slug>")
+    def blog_post(slug):
+        post=next((p for p in POSTS if p["slug"]==slug),None)
+        if not post: abort(404)
+        return render_template("post.html",post=post)
 
+    @app.route("/enquiry/<kind>",methods=["GET","POST"])
+    def enquiry(kind):
+        if kind not in ("quote","contact"): abort(404)
+        values={}; errors=[]
+        if request.method=="GET": session["submission_id"]=secrets.token_hex(24)
+        else:
+            fields=("name","email","phone","school","pickup","dropoff","message")
+            values={k:request.form.get(k,"").strip() for k in fields}
+            token=request.form.get("submission_id","")
+            if token and db().execute("SELECT id FROM enquiries WHERE submission_id=?",(token,)).fetchone(): return redirect(url_for("thank_you"))
+            if not token or token!=session.get("submission_id"): abort(400,"Reload the enquiry form before submitting.")
+            if request.form.get("website"): abort(400)
+            if limited("enquiry",10,3600): abort(429,"Too many submissions. Please try again later.")
+            if not 2<=len(values["name"])<=120: errors.append("Enter a name between 2 and 120 characters.")
+            if not values["email"] and not values["phone"]: errors.append("Enter an email address or phone number so we can reply.")
+            if values["email"] and (len(values["email"])>254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+",values["email"])): errors.append("Enter a valid email address.")
+            if values["phone"] and (not re.fullmatch(r"[+()0-9 .-]{7,30}",values["phone"]) or len(re.sub(r"\D","",values["phone"]))<7): errors.append("Enter a valid phone number.")
+            if any(len(values[k])>160 for k in ("school","pickup","dropoff")): errors.append("School and area fields must be at most 160 characters.")
+            if len(values["message"])>3000: errors.append("Keep the message below 3,000 characters.")
+            if kind=="quote" and not all(values[k] for k in ("school","pickup","dropoff")): errors.append("Enter the school, pickup area and drop-off area.")
+            if kind=="contact" and not values["message"]: errors.append("Enter your message.")
+            if not request.form.get("consent"): errors.append("Please agree to be contacted about this enquiry.")
+            if not errors:
+                a=session.get("attribution",{})
+                db().execute("INSERT INTO enquiries(created_at,kind,name,email,phone,school,pickup,dropoff,message,source,medium,campaign,visitor,submission_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (now(),kind,*[values[k] for k in fields],a.get("source","direct"),a.get("medium",""),a.get("campaign",""),session.get("visitor"),token)); db().commit()
+                session.pop("submission_id",None)
+                return redirect(url_for("thank_you"),303)
+        return render_template("enquiry.html",kind=kind,values=values,errors=errors),422 if errors else 200
 
-@app.after_request
-def track_visit(response):
-    try:
-        init_analytics_db()
+    @app.get("/thank-you")
+    def thank_you(): return render_template("thank_you.html")
 
-        path = request.path or "/"
-        if not _is_trackable(path):
-            return response
+    @app.route("/login",methods=["GET","POST"])
+    def login():
+        error=None
+        if request.method=="POST":
+            if limited("login",5,900): abort(429,"Too many attempts. Try again in 15 minutes.")
+            user=db().execute("SELECT * FROM owners WHERE username=?",(request.form.get("username", ""),)).fetchone()
+            if user and check_password_hash(user["password_hash"],request.form.get("password","")):
+                session.clear(); session["owner"]=user["id"]; session.permanent=True; csrf()
+                return redirect(url_for("admin_analytics"))
+            error="Username or password is incorrect."
+        return render_template("login.html",error=error),401 if error else 200
 
-        # Local-first: uses request.remote_addr (behind nginx later we'll use X-Forwarded-For)
-        ip = request.headers.get("X-Forwarded-For", "") or request.remote_addr or ""
-        ip = ip.split(",")[0].strip()
+    @app.post("/logout")
+    def logout(): session.clear(); return redirect(url_for("home"))
 
-        salt = os.environ.get("ANALYTICS_SALT", "dev_salt_change_me")
-        ip_hash = hashlib.sha256((salt + ip).encode("utf-8")).hexdigest()[:16] if ip else None
+    @app.get("/admin/analytics")
+    @owner_required
+    def admin_analytics():
+        since=(datetime.now(timezone.utc)-timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+        conn=db()
+        views=conn.execute("SELECT COUNT(*),COUNT(DISTINCT visitor) FROM page_views WHERE created_at>=?",(since,)).fetchone()
+        leads=conn.execute("SELECT COUNT(*),SUM(status='won'),COUNT(DISTINCT visitor) FROM enquiries WHERE created_at>=?",(since,)).fetchone()
+        converted=conn.execute("SELECT COUNT(DISTINCT e.visitor) FROM enquiries e JOIN page_views p ON e.visitor=p.visitor WHERE e.created_at>=? AND p.created_at>=?",(since,since)).fetchone()[0]
+        daily=conn.execute("SELECT substr(created_at,1,10) day,COUNT(*) count FROM page_views WHERE created_at>=? GROUP BY day ORDER BY day",(since,)).fetchall()
+        campaigns=conn.execute("SELECT source,medium,campaign,COUNT(*) leads,SUM(status='won') won FROM enquiries WHERE created_at>=? GROUP BY source,medium,campaign ORDER BY leads DESC",(since,)).fetchall()
+        traffic=conn.execute("SELECT source,medium,campaign,COUNT(*) views FROM page_views WHERE created_at>=? GROUP BY source,medium,campaign ORDER BY views DESC",(since,)).fetchall()
+        errors=conn.execute("SELECT status,COUNT(*) count FROM request_errors WHERE created_at>=? GROUP BY status",(since,)).fetchall()
+        return render_template("admin/dashboard.html",views=views,leads=leads,conversion=round(100*converted/views[1],1) if views[1] else 0,daily=daily,campaigns=campaigns,traffic=traffic,errors=errors)
 
-        ref = (request.headers.get("Referer") or "")[:300]
-        ua = (request.headers.get("User-Agent") or "")[:300]
+    @app.get("/admin/enquiries")
+    @owner_required
+    def admin_enquiries():
+        page=max(1,request.args.get("page",1,type=int)); rows=db().execute("SELECT * FROM enquiries ORDER BY id DESC LIMIT 51 OFFSET ?",((page-1)*50,)).fetchall()
+        return render_template("admin/enquiries.html",rows=rows[:50],page=page,has_next=len(rows)>50)
 
-        db = get_db()
-        db.execute(
-            "INSERT INTO visits (ts, path, method, status, referrer, ua, ip_hash) VALUES (?,?,?,?,?,?,?)",
-            (
-                datetime.utcnow().isoformat(timespec="seconds"),
-                path,
-                request.method,
-                response.status_code,
-                ref,
-                ua,
-                ip_hash,
-            ),
-        )
-        db.commit()
-    except Exception:
-        # Never break the website because analytics failed
-        pass
+    @app.post("/admin/enquiries/<int:enquiry_id>/status")
+    @owner_required
+    def enquiry_status(enquiry_id):
+        status=request.form.get("status")
+        if status not in ("new","contacted","won","lost"): abort(400)
+        db().execute("UPDATE enquiries SET status=? WHERE id=?",(status,enquiry_id)); db().commit()
+        return redirect(url_for("admin_enquiries"),303)
 
-    return response
+    @app.cli.command("create-owner")
+    @click.option("--username",prompt=True)
+    @click.password_option(confirmation_prompt=True)
+    def create_owner(username,password):
+        if len(password)<14: raise click.ClickException("Use a unique password of at least 14 characters.")
+        if not username.strip(): raise click.ClickException("Username is required.")
+        if db().execute("SELECT 1 FROM owners WHERE username=?",(username,)).fetchone(): raise click.ClickException("Owner already exists.")
+        db().execute("INSERT INTO owners(username,password_hash) VALUES(?,?)",(username,generate_password_hash(password))); db().commit()
+        click.echo("Owner created. Password stored as a hash.")
+    return app
 
-
-def require_admin(f):
-    @wraps(f)
-    def wrapped(*args, **kwargs):
-        user = os.environ.get("ADMIN_USER", "admin")
-        pw = os.environ.get("ADMIN_PASS", "admin123")  # change this for real use
-
-        auth = request.authorization
-        if not auth or auth.username != user or auth.password != pw:
-            return Response("Authentication required", 401, {"WWW-Authenticate": 'Basic realm="JoyfullRides Admin"'})
-        return f(*args, **kwargs)
-
-    return wrapped
-
-
-# ===========
-# Routes
-# ===========
-@app.get("/")
-def home():
-    return render_template("index.html")
-
-
-@app.get("/blog")
-def blog():
-    posts = sorted(POSTS, key=lambda p: p["date"], reverse=True)
-    return render_template("blog.html", posts=posts)
-
-
-@app.get("/soe")
-def soe_blog_alias():
-    posts = sorted(POSTS, key=lambda p: p["date"], reverse=True)
-    return render_template("blog.html", posts=posts)
-
-
-@app.get("/blog/<slug>")
-def blog_post(slug: str):
-    post = next((p for p in POSTS if p["slug"] == slug), None)
-    if not post:
-        abort(404)
-    return render_template("post.html", post=post)
-
-
-@app.get("/admin/analytics")
-@require_admin
-def admin_analytics():
-    init_analytics_db()
-    db = get_db()
-
-    since_30 = (datetime.utcnow() - timedelta(days=30)).isoformat(timespec="seconds")
-
-    total_views = db.execute("SELECT COUNT(*) c FROM visits WHERE ts >= ?", (since_30,)).fetchone()["c"]
-    unique_visitors = db.execute(
-        "SELECT COUNT(DISTINCT ip_hash) c FROM visits WHERE ts >= ? AND ip_hash IS NOT NULL",
-        (since_30,),
-    ).fetchone()["c"]
-
-    top_pages = db.execute(
-        """
-        SELECT path, COUNT(*) views
-        FROM visits
-        WHERE ts >= ?
-        GROUP BY path
-        ORDER BY views DESC
-        LIMIT 10
-        """,
-        (since_30,),
-    ).fetchall()
-
-    daily = db.execute(
-        """
-        SELECT substr(ts, 1, 10) day, COUNT(*) views
-        FROM visits
-        WHERE ts >= ?
-        GROUP BY day
-        ORDER BY day
-        """,
-        (since_30,),
-    ).fetchall()
-
-    recent = db.execute(
-        """
-        SELECT ts, path, status, referrer
-        FROM visits
-        ORDER BY id DESC
-        LIMIT 50
-        """
-    ).fetchall()
-
-    days = [r["day"] for r in daily]
-    counts = [r["views"] for r in daily]
-
-    return render_template(
-        "admin_analytics.html",
-        total_views=total_views,
-        unique_visitors=unique_visitors,
-        top_pages=top_pages,
-        recent=recent,
-        days=days,
-        counts=counts,
-    )
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+app=create_app()
+if __name__=="__main__": app.run(port=int(os.getenv("PORT","5000")),debug=False)
